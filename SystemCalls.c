@@ -174,7 +174,7 @@ static int launchUserProcess(char* pArg)
     resultCode = (pProc->startFunc)(pArg);
 
     /* Exit if the startup function returns */
-    sys_exit(resultCode);
+    Exit(resultCode);
 
     return 0;
 }
