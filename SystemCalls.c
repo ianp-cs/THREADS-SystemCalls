@@ -316,7 +316,7 @@ int sys_wait(int* pStatus)
         k_wait(pStatus);
     }
 
-    return pStatus;
+    return *pStatus;
 }
 
 /*
