@@ -539,10 +539,11 @@ int k_semv(int sem_id)
     targetSem->count++;
     result = 0;
     
-    if (targetSem->numWaitingProcs > 0)
+    int index = targetSem->count - 1;
+    if (targetSem->numWaitingProcs > 0 && targetSem->numWaitingProcs > index)
     {
         // Wake process
-        mailbox_send(targetSem->waitingProcs[0]->mboxSem, NULL, 0, FALSE);
+        mailbox_send(targetSem->waitingProcs[index]->mboxSem, NULL, 0, FALSE);
     }
 
     return result;
