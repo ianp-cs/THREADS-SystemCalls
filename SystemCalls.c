@@ -18,14 +18,12 @@
 #include "SystemCalls.h"
 #include "libuser.h"
 
+
+// Semaphor status codes
+#define STATUS_POSITION_UNUSED 0
+#define STATUS_POSITION_INUSE 1
+
 /* -------------------- Typedefs and Structs ------------------------------- */
-typedef struct sem_data
-{
-    int status;
-    int sem_id;
-    int count;
-    
-} SemData;
 
 typedef struct user_proc
 {
@@ -33,14 +31,26 @@ typedef struct user_proc
     struct user_proc* pNextSibling;
     struct user_proc* pPrevSibling;
     struct user_proc* pNextSem;
-    struct user_proc* pPrevSem;
+    struct user_proc* pPrevSem;             // Unused
     TList             children;
     int               (*startFunc) (char*); /* function where process begins -- launch */
     int               pid;
     int               mboxStartup;
+    int               mboxSem;
     int               priority;
+    int               kill;                 // If 1, process should exit as soon as possible
 
 } UserProcess;
+
+typedef struct sem_data
+{
+    int status;
+    int sem_id;
+    int count;
+    UserProcess* waitingProcs[MAX_PROCESSES];
+    int numWaitingProcs;
+
+} SemData;
 
 #define MAXSEMS 200
 
@@ -63,6 +73,9 @@ int k_semp(int sem_id);
 int k_semv(int sem_id);
 int k_semcreate(int initial_value);
 int k_semfree(int sem_id);
+SemData* findSem(int sem_id);
+void semAddWaitingProc(SemData* targetSem, UserProcess* currProc);
+void semRemoveWaitingProc(SemData* targetSem, UserProcess* currProc);
 static void checkKernelMode(char* functionName);
 static UserProcess* getProc(int pid);
 static void clearProcess(UserProcess* proc);
@@ -90,9 +103,10 @@ int MessagingEntryPoint(char* arg)
     /* Initialize the semaphore table */
     for (int i = 0; i < MAXSEMS; i++)
     {
-        semTable[i].status = -1;
+        semTable[i].status = STATUS_POSITION_UNUSED;
         semTable[i].sem_id = -1;
-        semTable[i].count = 0;
+        semTable[i].count = -1;
+        semTable[i].numWaitingProcs = 0;
     }
 
     /* initialize the system call vector */
@@ -112,14 +126,15 @@ int MessagingEntryPoint(char* arg)
         userProcTable[i].pid = -1;
         userProcTable[i].priority = -1;
         userProcTable[i].mboxStartup = mailbox_create(1, sizeof(int));
+        userProcTable[i].mboxSem = mailbox_create(0, 0);
         TListInitialize(&(userProcTable[i].children), offsetof(UserProcess, pNextSibling), processOrder);
     }
 
     pid = sys_spawn("SystemCalls", SystemCallsEntryPoint, NULL, THREADS_MIN_STACK_SIZE * 4, 3);
     sys_wait(&status);
 
-    console_output(FALSE, "MessagingEntryPoint(): join returned pid = %d, status = %d\n",
-        pid, status);
+    //console_output(FALSE, "MessagingEntryPoint(): join returned pid = %d, status = %d\n",
+    //    pid, status);
 
     return 0;
 } /* MessagingEntryPoint */
@@ -142,15 +157,15 @@ static int launchUserProcess(char* pArg)
     int resultCode;
     UserProcess* pProc = getProc(pid);
 
-    /* wait for the initialize process to complete. */
-    mailbox_receive(pProc->mboxStartup, NULL, 0, 1);
-
     // if signaled when in the sys handler, then Exit
     if (signaled())
     {
         console_output(FALSE, "%s - Process signaled in launch.\n", "launchUserProcess");
         sys_exit(0);
     }
+
+    /* wait for the initialize process to complete. */
+    mailbox_receive(pProc->mboxStartup, NULL, 0, 1);
 
     /* Set mode to user mode */
     set_psr(get_psr() & ~PSR_KERNEL_MODE);
@@ -256,15 +271,18 @@ void sys_exit(int resultCode)
 {
     int pid = k_getpid();
     UserProcess* proc = getProc(pid);
-    UserProcess* child = (UserProcess*)TListPopNode(&(proc->children));
 
-    while (child != NULL)
+    if (proc->children.count > 0)
     {
-        int target = child->pid;
-        clearProcess(child);
-        k_kill(target, SIG_TERM);
-        k_join(target, &resultCode);
-        child = (UserProcess*)TListPopNode(&(proc->children));
+        UserProcess* child = (UserProcess*)TListPopNode(&(proc->children));
+
+        while (child != NULL)
+        {
+            int target = child->pid;
+            k_kill(target, SIG_TERM);
+            k_join(target, &resultCode);
+            child = (UserProcess*)TListPopNode(&(proc->children));
+        }
     }
 
     if (proc->pParent != NULL)
@@ -298,7 +316,7 @@ int sys_wait(int* pStatus)
         k_wait(pStatus);
     }
 
-    return 0;
+    return pStatus;
 }
 
 /*
@@ -315,6 +333,7 @@ int sys_wait(int* pStatus)
 static void system_call_handler(system_call_arguments_t* args)
 {
     int pid = -1;
+    int status = 0;
 
     switch (args->call_id)
     {
@@ -329,8 +348,47 @@ static void system_call_handler(system_call_arguments_t* args)
         args->arguments[3] = (intptr_t)(pid >= 0 ? 0 : -1);
         break;
 
+    case SYS_WAIT:
+        args->arguments[0] = (intptr_t)k_getpid();
+        args->arguments[1] = (intptr_t)sys_wait(&status);
+        args->arguments[3] = (intptr_t)(pid >= 0 ? 0 : -1);
+        break;
+
     case SYS_EXIT:
         sys_exit((int)args->arguments[0]);
+        break;
+
+    case SYS_SLEEP:
+        // Ask instructor
+        break;
+
+    case SYS_SEMCREATE:
+        args->arguments[0] = (intptr_t)k_semcreate((int)args->arguments[0]);
+        args->arguments[3] = (intptr_t)((intptr_t)args->arguments[0] >= 0 ? 0 : -1);
+        break;
+
+    case SYS_SEMP:
+        args->arguments[3] = (intptr_t)k_semp((int)args->arguments[0]);
+        break;
+
+    case SYS_SEMV:
+        args->arguments[3] = (intptr_t)k_semv((int)args->arguments[0]);
+        break;
+
+    case SYS_SEMFREE:
+        args->arguments[3] = (intptr_t)k_semfree((int)args->arguments[0]);
+        break;
+
+    case SYS_GETTIMEOFDAY:
+        // Ask instructor
+        break;
+
+    case SYS_CPUTIME:
+        args->arguments[0] = (intptr_t)read_time();
+        break;
+
+    case SYS_GETPID:
+        args->arguments[0] = (intptr_t)k_getpid();
         break;
 
     default:
@@ -434,24 +492,180 @@ int processOrder(void* pNode1, void* pNode2)
 int k_semp(int sem_id)
 {
     int result = -1;
+    SemData* targetSem = findSem(sem_id);
+
+    if (targetSem == NULL)
+    {
+        console_output(false, "k_semp(): Invalid sem_id, semaphore was not decremented.\n");
+        return -1;
+    }
+
+    // Get scoped process information
+    int pid = k_getpid();
+    UserProcess* currProc = &userProcTable[pid % MAXPROC];
+
+    if (targetSem->count == 0)
+    {
+        // Block
+        semAddWaitingProc(targetSem, currProc);
+        mailbox_receive(currProc->mboxSem, NULL, 0, TRUE);
+
+        // After being Unblocked
+        if (currProc->kill == 1) // Exit immediately
+        {
+            sys_exit(1);
+        }
+
+        semRemoveWaitingProc(targetSem, currProc);
+    }
+
+    targetSem->count--;
+    result = 0;
+
     return result;
 }
 
 int k_semv(int sem_id)
 {
     int result = -1;
+    SemData* targetSem = findSem(sem_id);
+
+    if (targetSem == NULL)
+    {
+        console_output(false, "k_semv(): Invalid sem_id, semaphore was not incremented.\n");
+        return -1;
+    }
+
+    targetSem->count++;
+    result = 0;
+    
+    if (targetSem->numWaitingProcs > 0)
+    {
+        // Wake process
+        mailbox_send(targetSem->waitingProcs[0]->mboxSem, NULL, 0, FALSE);
+    }
+
     return result;
 }
 
 int k_semcreate(int initial_value)
 {
     int sem_id = -1;
+
+    if (initial_value >= 0)
+    {
+        for (int i = 0; i < MAXSEMS; i++)
+        {
+            if (semTable[i].status == STATUS_POSITION_UNUSED)
+            {
+                sem_id = nextsem_id;
+                nextsem_id++;
+
+                semTable[i].sem_id = sem_id;
+                semTable[i].count = initial_value;
+                semTable[i].status = STATUS_POSITION_INUSE;
+                break;
+            }
+        }
+
+        if (sem_id == -1)
+        {
+            console_output(false, "k_semcreate(): Semaphore table is full, could not create new semaphore.\n");
+        }
+    }
+    else
+    {
+        console_output(false, "k_semcreate(): Initial value parameter less than 0.\n");
+    }
+
     return sem_id;
 }
+
 
 int k_semfree(int sem_id)
 {
     int result = -1;
+    SemData* targetSem = findSem(sem_id);
+
+    if (targetSem == NULL)
+    {
+        console_output(false, "k_semfree(): Invalid sem_id, semaphore was not freed.\n");
+        return -1;
+    }
+
+    if (targetSem->numWaitingProcs == 0) 
+    {
+        result = 0;
+    }
+    else 
+    {
+        for(int i = 0; i < targetSem->numWaitingProcs; i++)
+        {
+            targetSem->waitingProcs[i]->kill = 1;
+            mailbox_send(targetSem->waitingProcs[i]->mboxSem, NULL, 0, FALSE);
+            targetSem->waitingProcs[i] = NULL;
+        }
+
+        result = 1;
+    }
+
+    // Clear semaphore table entry
+    targetSem->count = 0;
+    targetSem->sem_id = -1;
+    targetSem->status = STATUS_POSITION_UNUSED;
+    targetSem->numWaitingProcs = 0;
 
     return result;
+}
+
+
+SemData* findSem(int sem_id)
+{
+    for (int i = 0; i < MAXSEMS; i++)
+    {
+        if (semTable[i].sem_id == sem_id)
+        {
+            return &semTable[i];
+        }
+    }
+
+    return NULL;
+}
+
+
+void semAddWaitingProc(SemData* targetSem, UserProcess* currProc)
+{
+    if (targetSem->numWaitingProcs == MAX_PROCESSES)
+    {
+        console_output(false, "k_semAddWaitingProc(): Attempting to add more processes than can exist to the semaphore's waiting list.\n");
+        stop(1);
+    }
+
+    int pos = targetSem->numWaitingProcs;
+    targetSem->waitingProcs[pos] = currProc;
+    targetSem->numWaitingProcs++;
+}
+
+
+void semRemoveWaitingProc(SemData* targetSem, UserProcess* currProc)
+{
+    if (targetSem->waitingProcs[0] == 0)
+    {
+        console_output(false, "k_semRemoveWaitingProc(): Cannot remove a process, the list is empty.\n");
+        return;
+    }
+    else if (targetSem->waitingProcs[0] != currProc)
+    {
+        console_output(false, "k_semRemoveWaitingProc(): Scoped process is not the head of the semaphor's waiting process list.\n");
+        stop(1);
+    }
+    
+
+    for (int i = 0; i < targetSem->numWaitingProcs && i < MAX_PROCESSES - 1; i++)
+    {
+        targetSem->waitingProcs[i] = targetSem->waitingProcs[i + 1];
+    }
+
+    targetSem->waitingProcs[MAX_PROCESSES - 1] = NULL; // Account for last index
+    targetSem->numWaitingProcs--;
 }
