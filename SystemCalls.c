@@ -64,7 +64,7 @@ static int sysCallsPid = -1;                // Holds the pid of the process that
 
 int sys_spawn(char* name, int (*startFunc)(char*), char* arg, int stackSize, int priority);
 void sys_exit(int resultCode);
-int sys_wait(int* pStatus);
+int sys_wait(int* pStatus, int* pid);
 int MessagingEntryPoint(char*);
 extern int SystemCallsEntryPoint(char*);
 static void system_call_handler(system_call_arguments_t* args);
@@ -131,7 +131,7 @@ int MessagingEntryPoint(char* arg)
     }
 
     pid = sys_spawn("SystemCalls", SystemCallsEntryPoint, NULL, THREADS_MIN_STACK_SIZE * 4, 3);
-    sys_wait(&status);
+    sys_wait(&status, &pid);
 
     //console_output(FALSE, "MessagingEntryPoint(): join returned pid = %d, status = %d\n",
     //    pid, status);
@@ -305,7 +305,7 @@ void sys_exit(int resultCode)
  *  Return Value: 0 means success
  *
  */
-int sys_wait(int* pStatus)
+int sys_wait(int* pStatus, int* pid)
 {
     if (getProc(k_getpid()) == NULL) // We are the Messenger process
     {
@@ -313,7 +313,7 @@ int sys_wait(int* pStatus)
     }
     else
     {
-        k_wait(pStatus);
+        *pid = k_wait(pStatus);
     }
 
     return *pStatus;
@@ -349,8 +349,8 @@ static void system_call_handler(system_call_arguments_t* args)
         break;
 
     case SYS_WAIT:
-        args->arguments[0] = (intptr_t)k_getpid();
-        args->arguments[1] = (intptr_t)sys_wait(&status);
+        args->arguments[1] = (intptr_t)sys_wait(&status, &pid);
+        args->arguments[0] = (intptr_t)pid;
         args->arguments[3] = (intptr_t)(pid >= 0 ? 0 : -1);
         break;
 
