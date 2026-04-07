@@ -155,7 +155,7 @@ static int launchUserProcess(char* pArg)
     int pid = k_getpid();
     int procSlot;
     int resultCode;
-    UserProcess* pProc = getProc(pid);
+    UserProcess* pProc = &userProcTable[pid % MAXPROC];
 
     // if signaled when in the sys handler, then Exit
     if (signaled())
