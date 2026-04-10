@@ -295,6 +295,7 @@ void sys_exit(int resultCode)
     k_exit(resultCode);
 }
 
+
 /*
  *  Routine:  sys_wait
  *
@@ -358,9 +359,11 @@ static void system_call_handler(system_call_arguments_t* args)
         sys_exit((int)args->arguments[0]);
         break;
 
+    /*
     case SYS_SLEEP:
-        // Ask instructor
+        
         break;
+    */
 
     case SYS_SEMCREATE:
         args->arguments[0] = (intptr_t)k_semcreate((int)args->arguments[0]);
@@ -380,7 +383,7 @@ static void system_call_handler(system_call_arguments_t* args)
         break;
 
     case SYS_GETTIMEOFDAY:
-        // Ask instructor
+        args->arguments[0] = (intptr_t)system_clock();
         break;
 
     case SYS_CPUTIME:
