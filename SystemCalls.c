@@ -270,27 +270,30 @@ int sys_spawn(char* name, int (*startFunc)(char*), char* arg, int stackSize, int
 void sys_exit(int resultCode)
 {
     int pid = k_getpid();
+    int exitCode = 0;
     UserProcess* proc = getProc(pid);
 
     if (proc->children.count > 0)
     {
-        UserProcess* child = (UserProcess*)TListPopNode(&(proc->children));
+        UserProcess* child = (UserProcess*)TListGetClosestNode(&(proc->children), NULL);
 
         while (child != NULL)
         {
             int target = child->pid;
             k_kill(target, SIG_TERM);
-            k_join(target, &resultCode);
-            child = (UserProcess*)TListPopNode(&(proc->children));
+            k_join(target, &exitCode);
+            UserProcess* lastChild = child;
+            child = (UserProcess*)TListGetClosestNode(&(proc->children), lastChild);
+            TListRemoveNode(&(proc->children), lastChild);
+            clearProcess(lastChild);
         }
     }
 
-    if (proc->pParent != NULL)
+    if (proc->pParent != NULL && !signaled())
     {
         TListRemoveNode(&(proc->pParent->children), proc);
+        clearProcess(proc);
     }
-    
-    clearProcess(proc);
 
     k_exit(resultCode);
 }
