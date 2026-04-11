@@ -227,7 +227,7 @@ int sys_spawn(char* name, int (*startFunc)(char*), char* arg, int stackSize, int
     pid = k_spawn(name, launchUserProcess, arg, stackSize, priority);
     if (pid < 0)
     {
-        console_output(FALSE, "Failed to create user process.");
+        console_output(FALSE, "Failed to create user process.\n");
     }
     else
     {
@@ -494,7 +494,17 @@ int processOrder(void* pNode1, void* pNode2)
     return 0;
 }
 
-
+/*
+ *  Routine: k_semp
+ *
+ *  Description: Decrements the semaphor targeted by sem_id. If the value is already at 0, this
+ *               process is blocked until the semaphor is incremented.
+ *
+ *  Arguments: int sem_id - the id of the semaphor to be decremented
+ *
+ *  Return Value: 0 means success, -1 means error
+ *
+ */
 int k_semp(int sem_id)
 {
     int result = -1;
@@ -531,9 +541,19 @@ int k_semp(int sem_id)
     return result;
 }
 
+/*
+ *  Routine: k_semv
+ *
+ *  Description: Increments the semaphor targeted by sem_id. If there is at least one process 
+ *               waiting for the semaphor, the first process in line is awakened.
+ *
+ *  Arguments: int sem_id - the id of the semaphor to be incremented
+ *
+ *  Return Value: 0 means success, -1 means error
+ *
+ */
 int k_semv(int sem_id)
 {
-    int result = -1;
     SemData* targetSem = findSem(sem_id);
 
     if (targetSem == NULL)
@@ -543,7 +563,6 @@ int k_semv(int sem_id)
     }
 
     targetSem->count++;
-    result = 0;
     
     int index = targetSem->count - 1;
     if (targetSem->numWaitingProcs > 0 && targetSem->numWaitingProcs > index)
@@ -552,9 +571,20 @@ int k_semv(int sem_id)
         mailbox_send(targetSem->waitingProcs[index]->mboxSem, NULL, 0, FALSE);
     }
 
-    return result;
+    return 0;
 }
 
+/*
+ *  Routine: k_semcreate
+ *
+ *  Description: Creates a new semaphor, if less semaphors exist than MAXSEMS, with a starting
+ *               value equal to initial_value.
+ *
+ *  Arguments: int initial_value - the initial value to be set for the new semaphor
+ *
+ *  Return Value: -1 means error, otherwise returns the id of the new semaphor
+ *
+ */
 int k_semcreate(int initial_value)
 {
     int sem_id = -1;
@@ -588,7 +618,19 @@ int k_semcreate(int initial_value)
     return sem_id;
 }
 
-
+/*
+ *  Routine: k_semfree
+ *
+ *  Description: Frees the target semaphor, clearing out its fields and making it ready for use
+ *               elsewhere. If any processes are waiting on the semaphor, they are signaled to
+ *               terminate.
+ *
+ *  Arguments: int sem_id - the id of the semaphor to be freed
+ *
+ *  Return Value: 0 means success with no waiting procs, 1 means success and waiting procs were 
+                  signaled to terminate, -1 means error
+ *
+ */
 int k_semfree(int sem_id)
 {
     int result = -1;
@@ -625,7 +667,17 @@ int k_semfree(int sem_id)
     return result;
 }
 
-
+/*
+ *  Routine: findSem
+ *
+ *  Description: Searches the semaphor table for a semaphor with an id that matches sem_id and
+ *               returns its memory address.
+ *
+ *  Arguments: int sem_id - the id of the semaphor to be found
+ *
+ *  Return Value: the memory address of the target semaphor, or NULL if the semaphor doesn't exist
+ *
+ */
 SemData* findSem(int sem_id)
 {
     for (int i = 0; i < MAXSEMS; i++)
@@ -639,7 +691,17 @@ SemData* findSem(int sem_id)
     return NULL;
 }
 
-
+/*
+ *  Routine: semAddWaitingProc
+ *
+ *  Description: Adds the target process to the target semaphor's waiting processes list.
+ *
+ *  Arguments: SemData* targetSem - the semaphor whose waiting list will be appended
+ *             UserProcess* currProc - the process to be added to targetSem's waiting list
+ *
+ *  Return Value: None
+ *
+ */
 void semAddWaitingProc(SemData* targetSem, UserProcess* currProc)
 {
     if (targetSem->numWaitingProcs == MAX_PROCESSES)
@@ -653,7 +715,17 @@ void semAddWaitingProc(SemData* targetSem, UserProcess* currProc)
     targetSem->numWaitingProcs++;
 }
 
-
+/*
+ *  Routine: semRemoveWaitingProc
+ *
+ *  Description: Removes the target process from the target semaphor's waiting processes list.
+ *
+ *  Arguments: SemData* targetSem - the semaphor whose waiting list will be edited
+ *             UserProcess* currProc - the process to be removed from targetSem's waiting list
+ *
+ *  Return Value: None
+ *
+ */
 void semRemoveWaitingProc(SemData* targetSem, UserProcess* currProc)
 {
     if (targetSem->waitingProcs[0] == 0)
